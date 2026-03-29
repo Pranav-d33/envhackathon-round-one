@@ -1,6 +1,6 @@
-﻿---
+---
 title: SRE Incident Response OpenEnv
-emoji: 
+emoji: ":rotating_light:"
 colorFrom: red
 colorTo: blue
 sdk: docker
@@ -8,28 +8,9 @@ pinned: false
 license: mit
 tags:
   - openenv
-  - reinforcement-learning
-  - agent-evaluation
-  - sre
-  - real-world
-short_description: OpenEnv RL environment  AI agent as on-call SRE engineer
+short_description: OpenEnv RL environment for SRE incident response
 ---
 
-# SRE Incident Response  OpenEnv Environment
+# SRE Incident Response OpenEnv
 
-This Hugging Face Space runs the **SRE Incident Response** OpenEnv environment.
-
-The AI agent acts as an on-call Site Reliability Engineer, receiving production incident
-alerts and remediating infrastructure failures through investigation and targeted fixes.
-
-**API Docs:** Visit /docs for interactive Swagger UI.
-
-**Quick start:**
-`ash
-# Reset (start episode)
-curl -X POST https://your-space.hf.space/reset \
-  -H "Content-Type: application/json" \
-  -d '{"task_id": "task1", "seed": 42}'
-`
-
-See the [GitHub repo](https://github.com/your-org/sre-incident-response) for full documentation.
+AI agent as on-call SRE engineer
