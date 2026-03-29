@@ -1,0 +1,191 @@
+name: sre-incident-response
+version: "1.0.0"
+description: >
+  An OpenEnv environment where an AI agent acts as an on-call Site Reliability Engineer.
+  The agent receives production incident alerts, investigates root causes through logs,
+  metrics, and configuration inspection, then applies targeted remediation actions to
+  restore service health. Three tasks of increasing difficulty model real SRE workflows.
+
+author: SRE Incident Response Environment
+license: MIT
+tags:
+  - openenv
+  - sre
+  - incident-response
+  - devops
+  - real-world
+  - multi-step
+
+environment:
+  type: text-based
+  episodic: true
+  deterministic: true
+  observable: partial  # agent must investigate to reveal full state
+
+observation_space:
+  type: structured
+  description: >
+    JSON object containing active alerts, service health metrics (CPU, memory,
+    error rate, connection counts), investigation results (logs, metrics, configs),
+    recent deployment history, available actions, and contextual runbook hints.
+  fields:
+    session_id: string
+    task_id: string
+    step: integer
+    timestamp: string (ISO 8601)
+    alerts:
+      type: array
+      items:
+        alert_id: string
+        severity: critical or warning or info
+        service: string
+        message: string
+        triggered_at: string
+        acknowledged: boolean
+    services:
+      type: object
+      description: "Map of service_name → ServiceStatus"
+      value_fields:
+        status: healthy or degraded or down or unknown
+        cpu_percent: float [0, 100]
+        memory_percent: float [0, 100]
+        error_rate: float (errors/second)
+        connections: integer | null
+        max_connections: integer | null
+        version: string
+        replicas: integer
+    logs: array of LogEntry (populated after query_logs action)
+    metrics: array of MetricPoint (populated after check_metrics action)
+    available_actions: array of strings
+    incident_resolved: boolean
+    message: string (result of last action)
+    recent_deployments: array
+    runbook_hints: array of strings
+
+action_space:
+  type: discrete+parametric
+  description: >
+    Categorical action type with optional typed parameters. The agent selects
+    an action_type and provides relevant parameters.
+  actions:
+    query_logs:
+      description: Fetch recent log entries for a service
+      parameters:
+        service: {type: string, required: true}
+    check_metrics:
+      description: Retrieve current metrics for a service
+      parameters:
+        service: {type: string, required: true}
+    check_config:
+      description: Inspect live runtime configuration of a service
+      parameters:
+        service: {type: string, required: true}
+    restart_service:
+      description: Restart a service with rolling restart
+      parameters:
+        service: {type: string, required: true}
+    rollback_deployment:
+      description: Roll back service to previous deployment version
+      parameters:
+        service: {type: string, required: true}
+    kill_query:
+      description: Terminate long-running DB queries from a specific source
+      parameters:
+        source: {type: string, required: true, description: "Application holding the queries"}
+    scale_service:
+      description: Change the number of replicas for a service
+      parameters:
+        service: {type: string, required: true}
+        replicas: {type: integer, required: true, min: 1, max: 20}
+    examine_trace:
+      description: Examine a distributed trace to identify slow spans
+      parameters:
+        trace_id: {type: string, required: true}
+    acknowledge_alert:
+      description: Acknowledge an alert to stop paging
+      parameters:
+        alert_id: {type: string, required: true}
+    resolve_incident:
+      description: Mark incident as resolved (terminal action)
+      parameters: {}
+
+reward:
+  type: dense
+  range: [-inf, 1.0]
+  description: >
+    Per-step shaped rewards guide investigation and remediation. Positive rewards
+    for relevant investigation (+0.06–0.15) and correct fixes (+0.20–0.45).
+    Negative rewards for destructive or irrelevant actions (-0.05–-0.15).
+    Terminal reward on correct resolution (+0.25–0.30). Efficiency bonus for
+    fewer steps. Penalty for max-step timeout.
+
+tasks:
+  - id: task1
+    name: "CPU Spike Investigation"
+    description: >
+      The web-api service is consuming 95% CPU due to a memory leak in v2.3.1
+      (connection pool recycling disabled). Agent must investigate logs/metrics
+      and restart or roll back the service.
+    difficulty: easy
+    max_steps: 15
+    passing_score: 0.60
+    optimal_steps: 3
+    grader:
+      investigated_root_service: 0.15
+      service_remediated: 0.45
+      incident_resolved: 0.25
+      efficiency_bonus: 0.15
+
+  - id: task2
+    name: "Database Connection Pool Exhaustion"
+    description: >
+      db-primary connection pool is exhausted (100/100). analytics-worker v1.0.9
+      introduced unbounded full-table scans with no query timeout, holding 78/100
+      connections. Dependent services (payment-api, user-service) are timing out.
+      Restarting the DB worsens the situation.
+    difficulty: medium
+    max_steps: 18
+    passing_score: 0.60
+    optimal_steps: 4
+    grader:
+      root_cause_identified: 0.20
+      correct_attribution: 0.30
+      db_recovered: 0.20
+      incident_resolved: 0.20
+      efficiency_bonus: 0.10
+
+  - id: task3
+    name: "Cascading Service Failure"
+    description: >
+      Four services (api-gateway, user-service, order-service, payment-service)
+      are simultaneously down. config-service v1.2.0 was deployed 17 minutes ago
+      with broken service discovery URLs. All downstream services fail to resolve
+      each other. Red herrings: user-service memory warning, order-service recent
+      deployment. Restarting individual services has no effect.
+    difficulty: hard
+    max_steps: 20
+    passing_score: 0.60
+    optimal_steps: 3
+    grader:
+      investigated_root_cause: 0.15
+      correct_rollback: 0.40
+      full_recovery: 0.20
+      incident_resolved: 0.15
+      efficiency_bonus: 0.10
+
+endpoints:
+  reset: "POST /reset"
+  step: "POST /step"
+  state: "GET /state"
+  tasks: "GET /tasks"
+  grader: "POST /grader"
+  baseline: "POST /baseline"
+  health: "GET /health"
+
+baseline:
+  model: gpt-4o-mini
+  seed: 42
+  expected_scores:
+    task1: 0.85
+    task2: 0.65
+    task3: 0.55
