@@ -16,6 +16,7 @@ dependencies = [
     "httpx==0.28.1",
     "python-multipart==0.0.19",
     "pyyaml==6.0.2",
+    "openenv-core>=0.2.0",
 ]
 requires-python = ">=3.11"
 readme = "README.md"
@@ -23,9 +24,10 @@ readme = "README.md"
 [project.scripts]
 baseline = "baseline:main"
 inference = "inference:main"
+server = "server.app:main"
 
 [tool.setuptools]
-packages = ["app"]
+packages = ["app", "server"]
 
 [tool.setuptools.package-dir]
 "" = "."
