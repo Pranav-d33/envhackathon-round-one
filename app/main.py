@@ -100,7 +100,7 @@ async def health():
 
 
 @app.post("/reset", response_model=Observation, tags=["OpenEnv"])
-async def reset(request: ResetRequest = Body(...)):
+async def reset(request: Optional[ResetRequest] = Body(None)):
     """
     Start a new episode.
 
@@ -110,6 +110,8 @@ async def reset(request: ResetRequest = Body(...)):
     - **task_id**: One of `task1` (easy), `task2` (medium), `task3` (hard)
     - **seed**: Optional random seed for reproducibility
     """
+    if request is None:
+        request = ResetRequest()
     try:
         obs, session_id = env_manager.reset(
             task_id=request.task_id,
