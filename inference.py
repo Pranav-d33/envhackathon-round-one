@@ -80,14 +80,45 @@ Respond ONLY with JSON. No markdown. No explanation."""
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
+def _supports_unicode_stdout() -> bool:
+    enc = getattr(sys.stdout, "encoding", None) or ""
+    try:
+        "✓⚠ℹ✗═─→•".encode(enc or "utf-8")
+        return True
+    except Exception:
+        return False
+
+
+UNICODE_OK = _supports_unicode_stdout()
+HR_THICK = "═" if UNICODE_OK else "="
+HR_THIN = "─" if UNICODE_OK else "-"
+ARROW = "→" if UNICODE_OK else "->"
+
+
+def safe_print(s: str = "", **kwargs):
+    """
+    Print without crashing on Windows codepages that can't encode Unicode.
+    """
+    try:
+        print(s, **kwargs)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        s2 = s.encode(enc, errors="replace").decode(enc, errors="replace")
+        print(s2, **kwargs)
+
+
 def log(msg: str, level: str = "INFO"):
-    prefix = {"INFO": "ℹ", "OK": "✓", "WARN": "⚠", "ERR": "✗"}.get(level, "•")
-    print(f"  {prefix} {msg}")
+    if UNICODE_OK:
+        prefix = {"INFO": "ℹ", "OK": "✓", "WARN": "⚠", "ERR": "✗"}.get(level, "•")
+    else:
+        prefix = {"INFO": "i", "OK": "+", "WARN": "!", "ERR": "x"}.get(level, "-")
+    safe_print(f"  {prefix} {msg}")
 
 
 def format_observation(obs: dict) -> str:
     """Format observation dict into a concise prompt string."""
-    lines = [f"=== INCIDENT — Step {obs.get('step', 0)} ===\n"]
+    dash = "—" if UNICODE_OK else "-"
+    lines = [f"=== INCIDENT {dash} Step {obs.get('step', 0)} ===\n"]
 
     lines.append("ACTIVE ALERTS:")
     for alert in obs.get("alerts", []):
@@ -111,8 +142,9 @@ def format_observation(obs: dict) -> str:
     if obs.get("recent_deployments"):
         lines.append("\nRECENT DEPLOYMENTS:")
         for dep in obs["recent_deployments"]:
+            arrow = "→" if UNICODE_OK else "->"
             lines.append(
-                f"  {dep.get('service')}: v{dep.get('previous', '?')} → "
+                f"  {dep.get('service')}: v{dep.get('previous', '?')} {arrow} "
                 f"v{dep.get('version')} deployed at {dep.get('deployed_at')}"
             )
 
@@ -129,22 +161,29 @@ def format_observation(obs: dict) -> str:
 
 def call_llm(client: httpx.Client, model: str, messages: list) -> str:
     """Call OpenAI chat completions API."""
-    response = client.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": model,
-            "messages": messages,
-            "max_tokens": 200,
-            "temperature": 0.0,
-        },
-        timeout=30.0,
-    )
-    response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"].strip()
+    try:
+        response = client.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "messages": messages,
+                "max_tokens": 200,
+                "temperature": 0.0,
+            },
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"].strip()
+    except httpx.RequestError as e:
+        raise Exception(f"Network error calling OpenAI API: {e}")
+    except httpx.HTTPStatusError as e:
+        raise Exception(f"OpenAI API error (status {e.response.status_code}): {e.response.text}")
+    except (KeyError, IndexError) as e:
+        raise Exception(f"Unexpected response format from OpenAI API: {e}")
 
 
 def parse_action(text: str) -> dict:
@@ -165,6 +204,57 @@ def parse_action(text: str) -> dict:
     return {"action_type": "acknowledge_alert", "parameters": {"alert_id": "ALT-001"}}
 
 
+def _pick_target_service(obs: dict) -> Optional[str]:
+    services = obs.get("services") or {}
+    if not isinstance(services, dict) or not services:
+        return None
+
+    def score_service(item):
+        _, svc = item
+        try:
+            err = float(svc.get("error_rate") or 0.0)
+        except Exception:
+            err = 0.0
+        status = str(svc.get("status") or "").lower()
+        bad = 1.0 if status not in ("healthy", "ok", "passing") else 0.0
+        return (bad, err)
+
+    return max(services.items(), key=score_service)[0]
+
+
+def fallback_policy(obs: dict, step_num: int) -> dict:
+    """
+    Deterministic, no-network fallback agent.
+    This is intentionally conservative: gather evidence, prefer rollback on recent deploys,
+    and only resolve when things look healthy.
+    """
+    alerts = obs.get("alerts") or []
+    if isinstance(alerts, list):
+        for a in alerts:
+            if isinstance(a, dict) and a.get("acknowledged") is False and a.get("alert_id"):
+                return {"action_type": "acknowledge_alert", "parameters": {"alert_id": a["alert_id"]}}
+
+    # If there's a recent deployment on a sick service, prefer rollback early.
+    recent = obs.get("recent_deployments") or []
+    if isinstance(recent, list) and recent:
+        target = _pick_target_service(obs)
+        for dep in recent:
+            if not isinstance(dep, dict):
+                continue
+            svc = dep.get("service")
+            if svc and (target is None or svc == target):
+                return {"action_type": "rollback_deployment", "parameters": {"service": svc}}
+
+    target = _pick_target_service(obs) or "api"
+
+    # Alternate between logs/metrics/config early to build context.
+    if step_num % 3 == 0:
+        return {"action_type": "query_logs", "parameters": {"service": target}}
+    if step_num % 3 == 1:
+        return {"action_type": "check_metrics", "parameters": {"service": target}}
+    return {"action_type": "check_config", "parameters": {"service": target}}
+
+
 # ─── Core Runner ─────────────────────────────────────────────────────────────
 
 def run_task(
@@ -178,9 +268,9 @@ def run_task(
     """Run one complete episode for a task. Returns result dict."""
 
     if verbose:
-        print(f"\n{'─'*60}")
-        print(f"  Task: {task_id.upper()}")
-        print(f"{'─'*60}")
+        safe_print(f"\n{HR_THIN*60}")
+        safe_print(f"  Task: {task_id.upper()}")
+        safe_print(f"{HR_THIN*60}")
 
     episode_log = []
     score = 0.0
@@ -212,17 +302,20 @@ def run_task(
             messages = [{"role": "system", "content": SYSTEM_PROMPT}]
             messages += conversation[-8:]
 
-            # Get action from LLM
-            action_text = call_llm(llm_client, model, messages)
-            conversation.append({"role": "assistant", "content": action_text})
-
-            action_dict = parse_action(action_text)
+            # Get action from LLM (or fallback policy if no API key)
+            if OPENAI_API_KEY:
+                action_text = call_llm(llm_client, model, messages)
+                conversation.append({"role": "assistant", "content": action_text})
+                action_dict = parse_action(action_text)
+            else:
+                action_dict = fallback_policy(obs, step_num)
+                conversation.append({"role": "assistant", "content": json.dumps(action_dict)})
             action_type = action_dict.get("action_type", "unknown")
             parameters = action_dict.get("parameters", {})
 
             if verbose:
                 params_str = json.dumps(parameters) if parameters else "{}"
-                print(f"  Step {step_num+1:2d}: {action_type}({params_str})", end="")
+                safe_print(f"  Step {step_num+1:2d}: {action_type}({params_str})", end="")
 
             # Take step
             step_resp = env_client.post("/step", json={
@@ -240,7 +333,7 @@ def run_task(
             if verbose:
                 reward_str = f"{reward_val:+.3f}"
                 current_score = step_data["info"].get("grader_score", 0.0)
-                print(f" → reward: {reward_str} | score: {current_score:.3f}")
+                safe_print(f" {ARROW} reward: {reward_str} | score: {current_score:.3f}")
 
             episode_log.append({
                 "step": step_num + 1,
@@ -261,27 +354,48 @@ def run_task(
         breakdown = grader_data.get("breakdown", {})
 
         if verbose:
-            print(f"\n  {'─'*30}")
+            safe_print(f"\n  {HR_THIN*30}")
             log(f"Final score: {score:.4f}", "OK" if score >= 0.6 else "WARN")
             log(f"Steps taken: {steps_taken}", "INFO")
             if breakdown:
                 log("Breakdown:", "INFO")
                 for k, v in breakdown.items():
-                    print(f"      {k}: {v:+.4f}")
+                    safe_print(f"      {k}: {v:+.4f}")
 
+    except httpx.RequestError as e:
+        error_msg = f"Network error communicating with environment: {e}"
+        if verbose:
+            log(error_msg, "ERR")
+        episode_log.append({"error": error_msg})
+    except httpx.HTTPStatusError as e:
+        error_msg = f"Environment API error (status {e.response.status_code}): {e.response.text}"
+        if verbose:
+            log(error_msg, "ERR")
+        episode_log.append({"error": error_msg})
+    except (KeyError, ValueError, TypeError) as e:
+        error_msg = f"Unexpected response format from environment: {e}"
+        if verbose:
+            log(error_msg, "ERR")
+        episode_log.append({"error": error_msg})
     except Exception as e:
         if verbose:
             log(f"Error: {e}", "ERR")
         episode_log.append({"error": str(e)})
 
     # Get task info for name/difficulty
-    tasks_resp = env_client.get("/tasks")
-    task_info = {}
-    if tasks_resp.status_code == 200:
+    try:
+        tasks_resp = env_client.get("/tasks")
+        tasks_resp.raise_for_status()
+        task_info = {}
         for t in tasks_resp.json().get("tasks", []):
             if t["task_id"] == task_id:
                 task_info = t
                 break
+    except Exception as e:
+        # If we can't get task info, use defaults
+        task_info = {}
+        if verbose:
+            log(f"Warning: Could not retrieve task info: {e}", "WARN")
 
     return {
         "task_id": task_id,
@@ -310,26 +424,36 @@ def main():
     args = parser.parse_args()
 
     if not OPENAI_API_KEY:
-        print("ERROR: OPENAI_API_KEY environment variable not set.")
-        sys.exit(1)
+        safe_print("WARN: OPENAI_API_KEY not set; using deterministic fallback policy (no OpenAI calls).")
 
-    print(f"\n{'═'*60}")
-    print(f"  SRE Incident Response — Inference Evaluation")
-    print(f"{'═'*60}")
-    print(f"  Model:    {args.model}")
-    print(f"  Env URL:  {args.base_url}")
-    print(f"  Tasks:    {', '.join(args.tasks)}")
-    print(f"  MaxSteps: {args.max_steps}")
-    print(f"{'═'*60}")
+    dash = "—" if UNICODE_OK else "-"
+    safe_print(f"\n{HR_THICK*60}")
+    safe_print(f"  SRE Incident Response {dash} Inference Evaluation")
+    safe_print(f"{HR_THICK*60}")
+    safe_print(f"  Model:    {args.model}")
+    safe_print(f"  Env URL:  {args.base_url}")
+    safe_print(f"  Tasks:    {', '.join(args.tasks)}")
+    safe_print(f"  MaxSteps: {args.max_steps}")
+    safe_print(f"{HR_THICK*60}")
 
     # Verify environment is reachable
     with httpx.Client(base_url=args.base_url, timeout=30.0) as env_client:
         try:
             health = env_client.get("/health")
             health.raise_for_status()
-            print(f"\n  ✓ Environment healthy: {health.json()}")
+            ok = "✓" if UNICODE_OK else "+"
+            safe_print(f"\n  {ok} Environment healthy: {health.json()}")
+        except httpx.RequestError as e:
+            x = "✗" if UNICODE_OK else "x"
+            safe_print(f"\n  {x} Environment not reachable at {args.base_url}: Network error - {e}")
+            sys.exit(1)
+        except httpx.HTTPStatusError as e:
+            x = "✗" if UNICODE_OK else "x"
+            safe_print(f"\n  {x} Environment health check failed (status {e.response.status_code}): {e.response.text}")
+            sys.exit(1)
         except Exception as e:
-            print(f"\n  ✗ Environment not reachable at {args.base_url}: {e}")
+            x = "✗" if UNICODE_OK else "x"
+            safe_print(f"\n  {x} Environment not reachable at {args.base_url}: {e}")
             sys.exit(1)
 
         results = []
@@ -353,22 +477,22 @@ def main():
     mean_score = sum(r["score"] for r in results) / len(results) if results else 0.0
     passed = sum(1 for r in results if r["success"])
 
-    print(f"\n{'═'*60}")
-    print(f"  INFERENCE RESULTS SUMMARY")
-    print(f"{'═'*60}")
-    print(f"  {'Task':<35} {'Diff':<8} {'Score':<8} {'Steps':<7} {'Status'}")
-    print(f"  {'─'*55}")
+    safe_print(f"\n{HR_THICK*60}")
+    safe_print("  INFERENCE RESULTS SUMMARY")
+    safe_print(f"{HR_THICK*60}")
+    safe_print(f"  {'Task':<35} {'Diff':<8} {'Score':<8} {'Steps':<7} {'Status'}")
+    safe_print(f"  {HR_THIN*55}")
     for r in results:
-        status = "✓ PASS" if r["success"] else "✗ FAIL"
-        print(
+        status = ("✓ PASS" if UNICODE_OK else "+ PASS") if r["success"] else ("✗ FAIL" if UNICODE_OK else "x FAIL")
+        safe_print(
             f"  {r['task_name']:<35} {r['difficulty']:<8} "
             f"{r['score']:.4f}  {r['steps_taken']:<7} {status}"
         )
-    print(f"  {'─'*55}")
-    print(f"  {'Mean Score':<35} {'':8} {mean_score:.4f}")
-    print(f"  Tasks passed: {passed}/{len(results)}")
-    print(f"  Elapsed: {elapsed:.1f}s")
-    print(f"{'═'*60}\n")
+    safe_print(f"  {HR_THIN*55}")
+    safe_print(f"  {'Mean Score':<35} {'':8} {mean_score:.4f}")
+    safe_print(f"  Tasks passed: {passed}/{len(results)}")
+    safe_print(f"  Elapsed: {elapsed:.1f}s")
+    safe_print(f"{HR_THICK*60}\n")
 
     # ── Save results ──────────────────────────────────────────────────────────
     output = {
@@ -383,19 +507,29 @@ def main():
         },
     }
 
-    if args.output:
-        with open(args.output, "w") as f:
-            json.dump(output, f, indent=2)
-        print(f"  Results saved to {args.output}")
-    else:
-        # Always save a inference_results.json for reproducibility
-        with open("inference_results.json", "w") as f:
-            json.dump(output, f, indent=2)
-        print(f"  Results saved to inference_results.json")
+    try:
+        if args.output:
+            with open(args.output, "w") as f:
+                json.dump(output, f, indent=2)
+            safe_print(f"  Results saved to {args.output}")
+        else:
+            # Always save a inference_results.json for reproducibility
+            with open("inference_results.json", "w") as f:
+                json.dump(output, f, indent=2)
+            safe_print("  Results saved to inference_results.json")
+    except Exception as e:
+        safe_print(f"  WARN: Could not write results file: {e}")
 
     # Exit code: 0 if all tasks pass, 1 otherwise
     sys.exit(0 if passed == len(results) else 1)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        safe_print("\nInterrupted.")
+        raise
+    except Exception as e:
+        safe_print(f"FATAL: inference.py crashed: {e}")
+        sys.exit(2)
