@@ -443,8 +443,8 @@ class CascadingFailureTask(BaseTask):
                 for svc in ["api-gateway", "user-service", "order-service", "payment-service"])
         )
         if root_investigated:
-            breakdown["investigated_root_cause"] = 0.15
-            score += 0.15
+            breakdown["investigated_root_cause"] = 0.14
+            score += 0.14
 
         # config-service identified and rolled back?
         if state.get("config_service_rolledback", False):

@@ -131,7 +131,7 @@ tasks:
     passing_score: 0.60
     optimal_steps: 3
     grader:
-      investigated_root_service: 0.15
+      investigated_root_service: 0.14
       service_remediated: 0.45
       incident_resolved: 0.25
       efficiency_bonus: 0.15
@@ -148,7 +148,7 @@ tasks:
     passing_score: 0.60
     optimal_steps: 4
     grader:
-      root_cause_identified: 0.20
+      root_cause_identified: 0.19
       correct_attribution: 0.30
       db_recovered: 0.20
       incident_resolved: 0.20
@@ -167,7 +167,7 @@ tasks:
     passing_score: 0.60
     optimal_steps: 3
     grader:
-      investigated_root_cause: 0.15
+      investigated_root_cause: 0.14
       correct_rollback: 0.40
       full_recovery: 0.20
       incident_resolved: 0.15

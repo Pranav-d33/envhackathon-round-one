@@ -396,8 +396,8 @@ class DBConnectionPoolTask(BaseTask):
             "analytics-worker" in state.get("configs_checked", [])
         )
         if root_cause_found:
-            breakdown["root_cause_identified"] = 0.20
-            score += 0.20
+            breakdown["root_cause_identified"] = 0.19
+            score += 0.19
 
         # Correct attribution? (analytics-worker named as source)
         targeted_analytics = (

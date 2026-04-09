@@ -322,8 +322,8 @@ class CPUSpikeTask(BaseTask):
         if "web-api" in state.get("logs_queried", []) or \
            "web-api" in state.get("metrics_checked", []) or \
            "web-api" in state.get("configs_checked", []):
-            breakdown["investigated_root_service"] = 0.15
-            score += 0.15
+            breakdown["investigated_root_service"] = 0.14
+            score += 0.14
 
         # Service remediated?
         if state.get("web_api_restarted", False):
