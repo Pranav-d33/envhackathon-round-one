@@ -28,6 +28,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
 COPY openenv.yaml .
 COPY baseline.py .
+COPY inference.py .
 
 # Ensure correct ownership
 RUN chown -R appuser:appuser /app

@@ -26,6 +26,8 @@ import json
 import re
 import argparse
 import time
+import subprocess
+import signal
 from typing import Optional
 
 import httpx
@@ -184,6 +186,72 @@ def call_llm(client: httpx.Client, model: str, messages: list) -> str:
         raise Exception(f"OpenAI API error (status {e.response.status_code}): {e.response.text}")
     except (KeyError, IndexError) as e:
         raise Exception(f"Unexpected response format from OpenAI API: {e}")
+
+
+def _is_localhost_url(url: str) -> bool:
+    u = (url or "").strip().lower()
+    return u.startswith("http://localhost") or u.startswith("http://127.0.0.1")
+
+
+def _wait_for_health(base_url: str, timeout_s: float = 20.0) -> bool:
+    deadline = time.time() + timeout_s
+    last_err: Optional[Exception] = None
+    while time.time() < deadline:
+        try:
+            with httpx.Client(base_url=base_url, timeout=2.5) as c:
+                r = c.get("/health")
+                r.raise_for_status()
+                return True
+        except Exception as e:
+            last_err = e
+            time.sleep(0.4)
+    if last_err:
+        log(f"Health check still failing: {last_err}", "WARN")
+    return False
+
+
+def _start_local_server() -> subprocess.Popen:
+    """
+    Start the environment server in a subprocess.
+    Intended for runners that execute inference without already running the env.
+    """
+    cmd = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "7860",
+        "--workers",
+        "1",
+    ]
+    kwargs = {}
+    if os.name == "nt":
+        # Avoid CTRL-C propagation weirdness on Windows runners.
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+
+
+def _stop_local_server(p: subprocess.Popen):
+    try:
+        if p.poll() is not None:
+            return
+        if os.name == "nt":
+            p.send_signal(signal.CTRL_BREAK_EVENT)  # type: ignore[attr-defined]
+            try:
+                p.wait(timeout=5)
+                return
+            except Exception:
+                pass
+        p.terminate()
+        try:
+            p.wait(timeout=5)
+        except Exception:
+            p.kill()
+    except Exception:
+        pass
 
 
 def parse_action(text: str) -> dict:
@@ -421,6 +489,11 @@ def main():
                         help="Tasks to run (task1, task2, task3)")
     parser.add_argument("--quiet", action="store_true", help="Suppress step-by-step output")
     parser.add_argument("--output", help="Save results to JSON file")
+    parser.add_argument(
+        "--strict-exit",
+        action="store_true",
+        help="Exit non-zero when not all tasks pass (default: exit 0 if script completes).",
+    )
     args = parser.parse_args()
 
     if not OPENAI_API_KEY:
@@ -436,41 +509,42 @@ def main():
     safe_print(f"  MaxSteps: {args.max_steps}")
     safe_print(f"{HR_THICK*60}")
 
-    # Verify environment is reachable
-    with httpx.Client(base_url=args.base_url, timeout=30.0) as env_client:
-        try:
+    results = []
+    start = time.time()
+
+    server_proc: Optional[subprocess.Popen] = None
+    try:
+        # Verify environment is reachable; auto-start local server if needed.
+        if not _wait_for_health(args.base_url, timeout_s=3.0) and _is_localhost_url(args.base_url):
+            log("Environment not reachable; starting local server...", "WARN")
+            server_proc = _start_local_server()
+
+        if not _wait_for_health(args.base_url, timeout_s=20.0):
+            x = "✗" if UNICODE_OK else "x"
+            safe_print(f"\n  {x} Environment not reachable at {args.base_url}")
+            sys.exit(1)
+
+        with httpx.Client(base_url=args.base_url, timeout=30.0) as env_client:
             health = env_client.get("/health")
             health.raise_for_status()
             ok = "✓" if UNICODE_OK else "+"
             safe_print(f"\n  {ok} Environment healthy: {health.json()}")
-        except httpx.RequestError as e:
-            x = "✗" if UNICODE_OK else "x"
-            safe_print(f"\n  {x} Environment not reachable at {args.base_url}: Network error - {e}")
-            sys.exit(1)
-        except httpx.HTTPStatusError as e:
-            x = "✗" if UNICODE_OK else "x"
-            safe_print(f"\n  {x} Environment health check failed (status {e.response.status_code}): {e.response.text}")
-            sys.exit(1)
-        except Exception as e:
-            x = "✗" if UNICODE_OK else "x"
-            safe_print(f"\n  {x} Environment not reachable at {args.base_url}: {e}")
-            sys.exit(1)
 
-        results = []
-        start = time.time()
-
-        with httpx.Client(timeout=60.0) as llm_client:
-            for task_id in args.tasks:
-                result = run_task(
-                    env_client=env_client,
-                    llm_client=llm_client,
-                    task_id=task_id,
-                    model=args.model,
-                    max_steps=args.max_steps,
-                    verbose=not args.quiet,
-                )
-                results.append(result)
-                time.sleep(0.5)  # Rate limiting courtesy
+            with httpx.Client(timeout=60.0) as llm_client:
+                for task_id in args.tasks:
+                    result = run_task(
+                        env_client=env_client,
+                        llm_client=llm_client,
+                        task_id=task_id,
+                        model=args.model,
+                        max_steps=args.max_steps,
+                        verbose=not args.quiet,
+                    )
+                    results.append(result)
+                    time.sleep(0.5)  # Rate limiting courtesy
+    finally:
+        if server_proc is not None:
+            _stop_local_server(server_proc)
 
     # ── Summary ───────────────────────────────────────────────────────────────
     elapsed = time.time() - start
@@ -520,8 +594,12 @@ def main():
     except Exception as e:
         safe_print(f"  WARN: Could not write results file: {e}")
 
-    # Exit code: 0 if all tasks pass, 1 otherwise
-    sys.exit(0 if passed == len(results) else 1)
+    # Exit code:
+    # - default: 0 if script ran to completion (so runners don't treat "failed tasks" as a crash)
+    # - strict: 0 only if all tasks pass
+    if args.strict_exit:
+        sys.exit(0 if passed == len(results) else 1)
+    sys.exit(0)
 
 
 if __name__ == "__main__":
