@@ -432,14 +432,14 @@ class DBConnectionPoolTask(BaseTask):
 
         # Penalty: restarted DB (bad practice)
         if state.get("db_restarted", False):
-            breakdown["db_restart_penalty"] = -0.15
+            breakdown["db_restart_penalty"] = 0.15
             score -= 0.15
 
         # Penalty: other wrong actions
         wrong = state.get("wrong_actions", 0) - (1 if state.get("db_restarted", False) else 0)
         if wrong > 0:
             p = min(wrong * 0.07, 0.15)
-            breakdown["wrong_action_penalty"] = -p
+            breakdown["wrong_action_penalty"] = p
             score -= p
 
         score = round(min(max(score, 0.0), 1.0), 4)

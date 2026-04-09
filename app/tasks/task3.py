@@ -481,7 +481,7 @@ class CascadingFailureTask(BaseTask):
         wrong_rollbacks = state.get("wrong_rollbacks", 0)
         if wrong_rollbacks > 0:
             p = min(wrong_rollbacks * 0.08, 0.20)
-            breakdown["wrong_rollback_penalty"] = -p
+            breakdown["wrong_rollback_penalty"] = p
             score -= p
 
         score = round(min(max(score, 0.0), 1.0), 4)

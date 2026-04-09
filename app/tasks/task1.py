@@ -346,14 +346,12 @@ class CPUSpikeTask(BaseTask):
         elif steps <= 10:
             breakdown["efficiency_bonus"] = 0.05
             score += 0.05
-        else:
-            breakdown["efficiency_bonus"] = 0.0
 
         # Penalty for wrong actions
         wrong = state.get("wrong_actions", 0)
         if wrong > 0:
             penalty = min(wrong * 0.08, 0.20)
-            breakdown["wrong_action_penalty"] = -penalty
+            breakdown["wrong_action_penalty"] = penalty
             score -= penalty
 
         score = round(min(max(score, 0.0), 1.0), 4)
