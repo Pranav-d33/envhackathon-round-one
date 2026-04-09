@@ -45,9 +45,16 @@ except ImportError:
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
-DEFAULT_MODEL = "gpt-4o-mini"
-DEFAULT_BASE_URL = os.environ.get("OPENENV_BASE_URL", "http://localhost:7860")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+DEFAULT_MODEL = os.environ.get("MODEL_NAME") or "gpt-4o-mini"
+DEFAULT_BASE_URL = os.environ.get("ENV_BASE_URL") or os.environ.get("OPENENV_BASE_URL") or "http://localhost:7860"
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY") or os.environ.get("API_KEY") or ""
+DEFAULT_LLM_BASE_URL = (
+    os.environ.get("API_BASE_URL")
+    or os.environ.get("LITELLM_BASE_URL")
+    or os.environ.get("OPENAI_BASE_URL")
+    or os.environ.get("OPENAI_API_BASE")
+    or "https://api.openai.com/v1"
+)
 
 SYSTEM_PROMPT = """You are an expert Site Reliability Engineer (SRE) responding to a production incident.
 You will receive alerts, service statuses, and investigation results.
@@ -173,11 +180,16 @@ def format_observation(obs: dict) -> str:
     return "\n".join(lines)
 
 
-def call_llm(client: httpx.Client, model: str, messages: list) -> str:
+def call_llm(client: httpx.Client, model: str, messages: list, llm_base_url: str) -> str:
     """Call OpenAI chat completions API."""
     try:
+        base = (llm_base_url or "").rstrip("/")
+        if base.endswith("/v1"):
+            url = f"{base}/chat/completions"
+        else:
+            url = f"{base}/v1/chat/completions"
         response = client.post(
-            "https://api.openai.com/v1/chat/completions",
+            url,
             headers={
                 "Authorization": f"Bearer {OPENAI_API_KEY}",
                 "Content-Type": "application/json",
@@ -342,6 +354,7 @@ def run_task(
     llm_client: httpx.Client,
     task_id: str,
     model: str,
+    llm_base_url: str,
     max_steps: int,
     verbose: bool = True,
 ) -> dict:
@@ -387,7 +400,7 @@ def run_task(
 
             # Get action from LLM (or fallback policy if no API key)
             if OPENAI_API_KEY:
-                action_text = call_llm(llm_client, model, messages)
+                action_text = call_llm(llm_client, model, messages, llm_base_url=llm_base_url)
                 conversation.append({"role": "assistant", "content": action_text})
                 action_dict = parse_action(action_text)
             else:
@@ -512,13 +525,18 @@ def main():
     parser = argparse.ArgumentParser(
         description="Run inference agent against SRE Incident Response environment"
     )
-    parser.add_argument("--model", default=DEFAULT_MODEL, help="OpenAI model to use")
-    parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Environment base URL")
+    parser.add_argument("--model", default=DEFAULT_MODEL, help="Model name to use (MODEL_NAME)")
+    parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Environment base URL (ENV_BASE_URL)")
     parser.add_argument("--max-steps", type=int, default=12, help="Max steps per episode")
     parser.add_argument("--tasks", nargs="+", default=["task1", "task2", "task3"],
                         help="Tasks to run (task1, task2, task3)")
     parser.add_argument("--quiet", action="store_true", help="Suppress step-by-step output")
     parser.add_argument("--output", help="Save results to JSON file")
+    parser.add_argument(
+        "--llm-base-url",
+        default=DEFAULT_LLM_BASE_URL,
+        help="LLM proxy base URL (API_BASE_URL), e.g. https://<proxy>/v1",
+    )
     parser.add_argument(
         "--strict-exit",
         action="store_true",
@@ -545,6 +563,7 @@ def main():
         {
             "model": args.model,
             "base_url": args.base_url,
+            "llm_base_url": args.llm_base_url,
             "tasks": list(args.tasks),
             "max_steps": args.max_steps,
             "using_openai": bool(OPENAI_API_KEY),
@@ -589,6 +608,7 @@ def main():
                         llm_client=llm_client,
                         task_id=task_id,
                         model=args.model,
+                        llm_base_url=args.llm_base_url,
                         max_steps=args.max_steps,
                         verbose=not args.quiet,
                     )

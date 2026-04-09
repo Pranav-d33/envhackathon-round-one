@@ -64,6 +64,11 @@ Notes:
 
 - **Exit codes**: by default `inference.py` exits **0** if it completes (even if tasks fail), to avoid “runner failed” false negatives. Use `--strict-exit` if you want non-zero on failed tasks.
 - **Auto-start**: if `--base-url` is `http://localhost:7860` and the server isn’t running, `inference.py` will try to start the local server automatically.
+- **Hackathon env vars**: the script supports common evaluator variables:
+  - `API_BASE_URL` (LiteLLM proxy base)
+  - `API_KEY` (proxy key; also works with `OPENAI_API_KEY`)
+  - `MODEL_NAME` (model identifier)
+  - `ENV_BASE_URL` (environment server base URL)
 
 ## Hugging Face Spaces
 
