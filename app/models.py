@@ -163,7 +163,8 @@ class GraderResponse(BaseModel):
     """Response from /grader endpoint."""
     session_id: str
     task_id: str
-    score: float = Field(..., ge=0.0, le=1.0)
+    # Hackathon validator requires strictly within (0, 1).
+    score: float = Field(..., gt=0.0, lt=1.0)
     breakdown: Dict[str, float]
     episode_complete: bool
     steps_taken: int

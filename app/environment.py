@@ -66,7 +66,7 @@ class EnvironmentManager:
         self._sessions: Dict[str, Session] = {}
 
     @staticmethod
-    def _clamp_score_strict(score: float, eps: float = 1e-6) -> float:
+    def _clamp_score_strict(score: float, eps: float = 1e-3) -> float:
         """
         Hackathon validator requirement: task scores must be strictly within (0, 1).
         We clamp away from exact endpoints to avoid returning 0.0 or 1.0.

@@ -128,7 +128,7 @@ def emit_block(tag: str, payload: dict):
     safe_print(f"[{tag}] {line}")
 
 
-def clamp_score_strict(score: float, eps: float = 1e-6) -> float:
+def clamp_score_strict(score: float, eps: float = 1e-3) -> float:
     """
     Hackathon validator requirement: scores must be strictly within (0, 1).
     Clamp away from endpoints to avoid returning exactly 0.0 or 1.0.
@@ -662,7 +662,8 @@ def main():
         "environment": "sre-incident-response",
         "results": results,
         "summary": {
-            "mean_score": round(mean_score, 4),
+            # Avoid rounding to 0.0/1.0; validator requires strict (0,1).
+            "mean_score": clamp_score_strict(mean_score),
             "tasks_passed": passed,
             "total_tasks": len(results),
             "elapsed_seconds": round(elapsed, 1),
