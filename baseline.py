@@ -80,6 +80,22 @@ Respond ONLY with JSON. No markdown. No explanation."""
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
+def clamp_score_strict(score: float, eps: float = 1e-3) -> float:
+    """
+    Hackathon validator requirement: scores must be strictly within (0, 1).
+    Clamp away from endpoints to avoid returning exactly 0.0 or 1.0.
+    """
+    try:
+        s = float(score)
+    except Exception:
+        s = 0.0
+    if s <= 0.0:
+        return eps
+    if s >= 1.0:
+        return 1.0 - eps
+    return s
+
+
 def log(msg: str, level: str = "INFO"):
     prefix = {"INFO": "ℹ", "OK": "✓", "WARN": "⚠", "ERR": "✗"}.get(level, "•")
     print(f"  {prefix} {msg}")
@@ -283,13 +299,14 @@ def run_task(
                 task_info = t
                 break
 
+    final_score = clamp_score_strict(score)
     return {
         "task_id": task_id,
         "task_name": task_info.get("name", task_id),
         "difficulty": task_info.get("difficulty", "?"),
-        "score": score,
+        "score": final_score,
         "steps_taken": steps_taken,
-        "success": score >= task_info.get("passing_score", 0.6),
+        "success": final_score >= task_info.get("passing_score", 0.6),
         "episode_log": episode_log,
     }
 
@@ -350,7 +367,11 @@ def main():
 
     # ── Summary ───────────────────────────────────────────────────────────────
     elapsed = time.time() - start
-    mean_score = sum(r["score"] for r in results) / len(results) if results else 0.0
+    mean_score = (
+        sum(r["score"] for r in results) / len(results)
+        if results
+        else clamp_score_strict(0.0)
+    )
     passed = sum(1 for r in results if r["success"])
 
     print(f"\n{'═'*60}")
@@ -376,7 +397,8 @@ def main():
         "environment": "sre-incident-response",
         "results": results,
         "summary": {
-            "mean_score": round(mean_score, 4),
+            # Avoid rounding to 0.0/1.0; validator requires strict (0,1).
+            "mean_score": clamp_score_strict(mean_score),
             "tasks_passed": passed,
             "total_tasks": len(results),
             "elapsed_seconds": round(elapsed, 1),

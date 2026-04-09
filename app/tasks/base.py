@@ -122,7 +122,7 @@ class BaseTask(ABC):
         ...
 
     @staticmethod
-    def clamp_score_strict(score: float, eps: float = 1e-3) -> float:
+    def clamp_score_strict(score: float, eps: float = 0.01) -> float:
         """
         Hackathon validator requirement: scores must be strictly within (0, 1).
         Use this at the end of task graders to avoid returning exactly 0.0 or 1.0.

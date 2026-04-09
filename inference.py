@@ -128,7 +128,7 @@ def emit_block(tag: str, payload: dict):
     safe_print(f"[{tag}] {line}")
 
 
-def clamp_score_strict(score: float, eps: float = 1e-3) -> float:
+def clamp_score_strict(score: float, eps: float = 0.01) -> float:
     """
     Hackathon validator requirement: scores must be strictly within (0, 1).
     Clamp away from endpoints to avoid returning exactly 0.0 or 1.0.
@@ -453,7 +453,11 @@ def run_task(
                     "parameters": parameters,
                     "reward": reward_val,
                     "done": done,
-                    "grader_score": step_data.get("info", {}).get("grader_score"),
+                    "grader_score": (
+                        clamp_score_strict(step_data.get("info", {}).get("grader_score"))
+                        if step_data.get("info", {}).get("grader_score") is not None
+                        else None
+                    ),
                 },
             )
 
@@ -599,13 +603,31 @@ def main():
         if not _wait_for_health(args.base_url, timeout_s=20.0):
             x = "✗" if UNICODE_OK else "x"
             safe_print(f"\n  {x} Environment not reachable at {args.base_url}")
+            # Some validators expect per-task scores even on failure. Emit placeholder
+            # task results with strictly (0,1) scores so the run is still parseable.
+            placeholder_results = [
+                {
+                    "task_id": tid,
+                    "task_name": tid,
+                    "difficulty": "?",
+                    "score": clamp_score_strict(0.0),
+                    "steps_taken": 0,
+                    "success": False,
+                    "episode_log": [{"error": f"Environment not reachable at {args.base_url}"}],
+                }
+                for tid in list(args.tasks)
+            ]
             emit_block(
                 "END",
                 {
                     "model": args.model,
                     "environment": "sre-incident-response",
-                    "results": [],
-                    "summary": {"mean_score": clamp_score_strict(0.0), "tasks_passed": 0, "total_tasks": 0},
+                    "results": placeholder_results,
+                    "summary": {
+                        "mean_score": clamp_score_strict(0.0),
+                        "tasks_passed": 0,
+                        "total_tasks": len(placeholder_results),
+                    },
                     "error": f"Environment not reachable at {args.base_url}",
                 },
             )
@@ -637,6 +659,7 @@ def main():
     # ── Summary ───────────────────────────────────────────────────────────────
     elapsed = time.time() - start
     mean_score = sum(r["score"] for r in results) / len(results) if results else clamp_score_strict(0.0)
+    mean_score = clamp_score_strict(mean_score)
     passed = sum(1 for r in results if r["success"])
 
     safe_print(f"\n{HR_THICK*60}")

@@ -226,13 +226,19 @@ async def baseline(request: BaselineRequest = Body(default=BaselineRequest())):
             max_steps=request.max_steps,
             task_ids=request.tasks,
         )
+
+        # Ensure validator-safe scores even if baseline errored or returned edge values.
+        safe_scores = [env_manager._clamp_score_strict(r.get("score", 0.0)) for r in results]
+        for r, s in zip(results, safe_scores):
+            r["score"] = s
+
         return {
             "model": request.model,
             "results": results,
             "summary": {
                 "mean_score": round(
-                    sum(r["score"] for r in results) / len(results), 4
-                ) if results else 0.0,
+                    sum(safe_scores) / len(safe_scores), 4
+                ) if safe_scores else env_manager._clamp_score_strict(0.0),
                 "tasks_passed": sum(
                     1 for r in results
                     if r["score"] >= TASK_REGISTRY[r["task_id"]].passing_score
