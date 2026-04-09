@@ -65,6 +65,22 @@ class EnvironmentManager:
     def __init__(self):
         self._sessions: Dict[str, Session] = {}
 
+    @staticmethod
+    def _clamp_score_strict(score: float, eps: float = 1e-6) -> float:
+        """
+        Hackathon validator requirement: task scores must be strictly within (0, 1).
+        We clamp away from exact endpoints to avoid returning 0.0 or 1.0.
+        """
+        try:
+            s = float(score)
+        except Exception:
+            s = 0.0
+        if s <= 0.0:
+            return eps
+        if s >= 1.0:
+            return 1.0 - eps
+        return s
+
     def reset(self, task_id: str, seed: int = 42) -> Tuple[Observation, str]:
         """Start a new episode. Returns (initial_observation, session_id)."""
         if task_id not in TASK_REGISTRY:
@@ -147,6 +163,7 @@ class EnvironmentManager:
 
         # Grade for info
         score, grade_breakdown = task.grade(session.world_state, session.action_history)
+        score = self._clamp_score_strict(score)
 
         reward_obj = Reward(
             value=round(step_reward, 4),
@@ -173,6 +190,7 @@ class EnvironmentManager:
         session = self._sessions[session_id]
         task = TASK_REGISTRY[session.task_id]
         score, _ = task.grade(session.world_state, session.action_history)
+        score = self._clamp_score_strict(score)
         return session.to_state_response(grader_score=score)
 
     def grade(self, session_id: str) -> GraderResponse:
@@ -181,6 +199,7 @@ class EnvironmentManager:
         session = self._sessions[session_id]
         task = TASK_REGISTRY[session.task_id]
         score, breakdown = task.grade(session.world_state, session.action_history)
+        score = self._clamp_score_strict(score)
 
         passing = score >= task.passing_score
         return GraderResponse(
