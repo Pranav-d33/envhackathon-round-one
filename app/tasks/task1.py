@@ -356,4 +356,5 @@ class CPUSpikeTask(BaseTask):
             breakdown["wrong_action_penalty"] = -penalty
             score -= penalty
 
-        return round(min(max(score, 0.0), 1.0), 4), breakdown
+        score = round(min(max(score, 0.0), 1.0), 4)
+        return self.clamp_score_strict(score), breakdown

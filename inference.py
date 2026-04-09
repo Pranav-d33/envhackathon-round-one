@@ -128,6 +128,22 @@ def emit_block(tag: str, payload: dict):
     safe_print(f"[{tag}] {line}")
 
 
+def clamp_score_strict(score: float, eps: float = 1e-6) -> float:
+    """
+    Hackathon validator requirement: scores must be strictly within (0, 1).
+    Clamp away from endpoints to avoid returning exactly 0.0 or 1.0.
+    """
+    try:
+        s = float(score)
+    except Exception:
+        s = 0.0
+    if s <= 0.0:
+        return eps
+    if s >= 1.0:
+        return 1.0 - eps
+    return s
+
+
 def log(msg: str, level: str = "INFO"):
     if UNICODE_OK:
         prefix = {"INFO": "ℹ", "OK": "✓", "WARN": "⚠", "ERR": "✗"}.get(level, "•")
@@ -461,7 +477,7 @@ def run_task(
         grader_resp = env_client.post("/grader", json={"session_id": session_id})
         grader_resp.raise_for_status()
         grader_data = grader_resp.json()
-        score = grader_data["score"]
+        score = clamp_score_strict(grader_data["score"])
         breakdown = grader_data.get("breakdown", {})
 
         if verbose:
@@ -512,7 +528,7 @@ def run_task(
         "task_id": task_id,
         "task_name": task_info.get("name", task_id),
         "difficulty": task_info.get("difficulty", "?"),
-        "score": score,
+        "score": clamp_score_strict(score),
         "steps_taken": steps_taken,
         "success": score >= task_info.get("passing_score", 0.6),
         "episode_log": episode_log,
@@ -589,7 +605,7 @@ def main():
                     "model": args.model,
                     "environment": "sre-incident-response",
                     "results": [],
-                    "summary": {"mean_score": 0.0, "tasks_passed": 0, "total_tasks": 0},
+                    "summary": {"mean_score": clamp_score_strict(0.0), "tasks_passed": 0, "total_tasks": 0},
                     "error": f"Environment not reachable at {args.base_url}",
                 },
             )
@@ -620,7 +636,7 @@ def main():
 
     # ── Summary ───────────────────────────────────────────────────────────────
     elapsed = time.time() - start
-    mean_score = sum(r["score"] for r in results) / len(results) if results else 0.0
+    mean_score = sum(r["score"] for r in results) / len(results) if results else clamp_score_strict(0.0)
     passed = sum(1 for r in results if r["success"])
 
     safe_print(f"\n{HR_THICK*60}")

@@ -121,6 +121,22 @@ class BaseTask(ABC):
         """
         ...
 
+    @staticmethod
+    def clamp_score_strict(score: float, eps: float = 1e-6) -> float:
+        """
+        Hackathon validator requirement: scores must be strictly within (0, 1).
+        Use this at the end of task graders to avoid returning exactly 0.0 or 1.0.
+        """
+        try:
+            s = float(score)
+        except Exception:
+            s = 0.0
+        if s <= 0.0:
+            return eps
+        if s >= 1.0:
+            return 1.0 - eps
+        return s
+
     def _make_service(self, name: str, status: str, cpu: float, mem: float,
                        err: float, **kwargs) -> ServiceStatus:
         return ServiceStatus(
