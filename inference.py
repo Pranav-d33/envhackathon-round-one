@@ -109,6 +109,18 @@ def safe_print(s: str = "", **kwargs):
         print(s2, **kwargs)
 
 
+def emit_block(tag: str, payload: dict):
+    """
+    Emit structured output blocks for automated validators.
+    Format: [START]/[STEP]/[END] followed by one-line JSON.
+    """
+    try:
+        line = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+    except Exception:
+        line = "{}"
+    safe_print(f"[{tag}] {line}")
+
+
 def log(msg: str, level: str = "INFO"):
     if UNICODE_OK:
         prefix = {"INFO": "ℹ", "OK": "✓", "WARN": "⚠", "ERR": "✗"}.get(level, "•")
@@ -352,6 +364,9 @@ def run_task(
         obs = reset_resp.json()
         session_id = obs["session_id"]
 
+        # Structured output: indicate a new episode started.
+        emit_block("START", {"task_id": task_id, "session_id": session_id})
+
         if verbose:
             task_name = obs.get("message", "").split("Task:")[1].split("(")[0].strip() \
                 if "Task:" in obs.get("message", "") else task_id
@@ -397,6 +412,21 @@ def run_task(
             reward_val = step_data["reward"]["value"]
             done = step_data["done"]
             steps_taken = step_num + 1
+
+            # Structured output: one line per environment step.
+            emit_block(
+                "STEP",
+                {
+                    "task_id": task_id,
+                    "session_id": session_id,
+                    "step": steps_taken,
+                    "action_type": action_type,
+                    "parameters": parameters,
+                    "reward": reward_val,
+                    "done": done,
+                    "grader_score": step_data.get("info", {}).get("grader_score"),
+                },
+            )
 
             if verbose:
                 reward_str = f"{reward_val:+.3f}"
@@ -509,6 +539,18 @@ def main():
     safe_print(f"  MaxSteps: {args.max_steps}")
     safe_print(f"{HR_THICK*60}")
 
+    # Structured output: run header (always emitted).
+    emit_block(
+        "START",
+        {
+            "model": args.model,
+            "base_url": args.base_url,
+            "tasks": list(args.tasks),
+            "max_steps": args.max_steps,
+            "using_openai": bool(OPENAI_API_KEY),
+        },
+    )
+
     results = []
     start = time.time()
 
@@ -522,6 +564,16 @@ def main():
         if not _wait_for_health(args.base_url, timeout_s=20.0):
             x = "✗" if UNICODE_OK else "x"
             safe_print(f"\n  {x} Environment not reachable at {args.base_url}")
+            emit_block(
+                "END",
+                {
+                    "model": args.model,
+                    "environment": "sre-incident-response",
+                    "results": [],
+                    "summary": {"mean_score": 0.0, "tasks_passed": 0, "total_tasks": 0},
+                    "error": f"Environment not reachable at {args.base_url}",
+                },
+            )
             sys.exit(1)
 
         with httpx.Client(base_url=args.base_url, timeout=30.0) as env_client:
@@ -593,6 +645,9 @@ def main():
             safe_print("  Results saved to inference_results.json")
     except Exception as e:
         safe_print(f"  WARN: Could not write results file: {e}")
+
+    # Structured output: final summary block for validators.
+    emit_block("END", output)
 
     # Exit code:
     # - default: 0 if script ran to completion (so runners don't treat "failed tasks" as a crash)
